@@ -1,5 +1,5 @@
 fn main() {
     println!("Hello, world!");
 
-    println!("test github action");
+    println!("test github action again");
 }
