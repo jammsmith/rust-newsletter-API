@@ -1,8 +1,8 @@
-use std::net::TcpListener;
 use sqlx::{Connection, PgConnection};
+use std::net::TcpListener;
 
-use newsletter_api::startup::run;
 use newsletter_api::configuration::get_configuration;
+use newsletter_api::startup::run;
 
 #[tokio::test]
 async fn health_check_works() {
@@ -38,9 +38,7 @@ async fn subscribe_returns_200_response_for_valid_data() {
 
     let config = get_configuration().expect("Failed to read configuration.");
 
-    let mut connection = PgConnection::connect(
-        &config.database.connection_string()
-    )
+    let mut connection = PgConnection::connect(&config.database.connection_string())
         .await
         .expect("Failed to connect to Postgres.");
 
