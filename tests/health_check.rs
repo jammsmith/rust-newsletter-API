@@ -1,30 +1,61 @@
-use sqlx::{Connection, PgConnection};
+use sqlx::{Connection, Executor, PgConnection, PgPool};
 use std::net::TcpListener;
+use uuid::Uuid;
 
-use newsletter_api::configuration::get_configuration;
+use newsletter_api::configuration::{get_configuration, DatabaseSettings};
 use newsletter_api::startup::run;
 
-async fn spawn_app() -> (String, PgConnection) {
+struct TestApp {
+    pub app_address: String,
+    pub db_pool: PgPool,
+}
+
+async fn spawn_app() -> TestApp {
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port.");
 
-    let config = get_configuration().expect("Failed to read configuration.");
+    let mut config = get_configuration().expect("Failed to read configuration.");
+    config.database.database_name = Uuid::new_v4().to_string();
 
-    let mut db_connection = PgConnection::connect(&config.database.connection_string())
-        .await
-        .expect("Failed to connect to Postgres.");
+    let db_pool = configure_database(&config.database).await;
 
     let port = listener.local_addr().unwrap().port();
 
-    let server = run(listener, db_connection).expect("Failed to bind address");
+    let server = run(listener, db_pool.clone()).expect("Failed to bind address");
 
     let _ = tokio::spawn(server);
 
-    (format!("http://127.0.0.1:{}", port), db_connection)
+    TestApp {
+        app_address: format!("http://127.0.0.1:{}", port),
+        db_pool,
+    }
+}
+
+// Spin up a new database with random name for tests
+async fn configure_database(db_config: &DatabaseSettings) -> PgPool {
+    let mut connection = PgConnection::connect(&db_config.connection_string_without_db())
+        .await
+        .expect("Failed to connect to Postgres");
+
+    connection
+        .execute(format!(r#"CREATE DATABASE "{}";"#, db_config.database_name).as_str())
+        .await
+        .expect("Failed to create database");
+
+    let connection_pool = PgPool::connect(&db_config.connection_string())
+        .await
+        .expect("Failed to connect to database");
+
+    sqlx::migrate!("./migrations")
+        .run(&connection_pool)
+        .await
+        .expect("Failed to migrate the database");
+
+    connection_pool
 }
 
 #[tokio::test]
 async fn health_check_works() {
-    let (app_address, _) = spawn_app().await;
+    let TestApp { app_address, .. } = spawn_app().await;
 
     let client = reqwest::Client::new();
 
@@ -40,11 +71,14 @@ async fn health_check_works() {
 
 #[tokio::test]
 async fn subscribe_returns_200_response_for_valid_data() {
-    let (app_address, db_connection) = spawn_app().await;
+    let TestApp {
+        app_address,
+        db_pool,
+    } = spawn_app().await;
 
     let client = reqwest::Client::new();
 
-    let body = "name=john&20wayne&email=big_guns2&40gmail.com";
+    let body = "name=john%20wayne&email=big_guns%40gmail.com";
 
     let response = client
         .post(format!("{}/subscriptions", &app_address))
@@ -56,23 +90,24 @@ async fn subscribe_returns_200_response_for_valid_data() {
 
     assert_eq!(200, response.status().as_u16());
 
-    let subscribed = sqlx::query!("SELECT email, name FROM subscriptions",)
-        .fetch_one(&mut db_connection)
+    let subscribed = sqlx::query!("SELECT email, name FROM subscriptions")
+        .fetch_one(&db_pool)
         .await
         .expect("Failed to fetch saved subscription");
 
-    assert_eq!(subscribed.email, "big_guns2@gmail.com");
+    assert_eq!(subscribed.email, "big_guns@gmail.com");
     assert_eq!(subscribed.name, "john wayne");
 }
 
 #[tokio::test]
 async fn subscribe_returns_400_response_when_data_is_missing() {
-    let (app_address, _) = spawn_app().await;
+    let TestApp { app_address, .. } = spawn_app().await;
+
     let client = reqwest::Client::new();
 
     let test_cases = vec![
         ("name=john%20wayne", "email field missing"),
-        ("email=big_guns&40gmail.com", "name field missing"),
+        ("email=big_guns%40gmail.com", "name field missing"),
         ("", "both name and email fields missing"),
     ];
 

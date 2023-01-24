@@ -1,4 +1,4 @@
-use sqlx::{Connection, PgConnection};
+use sqlx::PgPool;
 use std::net::TcpListener;
 
 use newsletter_api::configuration::get_configuration;
@@ -13,9 +13,9 @@ async fn main() -> std::io::Result<()> {
         config.application.host, config.application.port
     ))?;
 
-    let connection = PgConnection::connect(&config.database.connection_string())
+    let connection_pool = PgPool::connect(&config.database.connection_string())
         .await
         .expect("Failed to connect to Postgres DB");
 
-    run(listener, connection)?.await
+    run(listener, connection_pool)?.await
 }
